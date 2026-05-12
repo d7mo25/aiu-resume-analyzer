@@ -10,7 +10,6 @@ import base64
 import pandas as pd
 import io
 import re
-import spacy
 from pdfminer.layout import LAParams
 from pdfminer.pdfpage import PDFPage, PDFTextExtractionNotAllowed
 from pdfminer.pdfinterp import PDFResourceManager, PDFPageInterpreter
@@ -40,18 +39,6 @@ matplotlib.use('Agg')
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# spaCy model
-# On Vercel, en_core_web_sm is installed as a pip package (see requirements.txt),
-# so no subprocess download is required.
-# ---------------------------------------------------------------------------
-try:
-    nlp = spacy.load("en_core_web_sm")
-    logger.info("✅ spaCy model loaded")
-except OSError:
-    logger.error("❌ spaCy en_core_web_sm not found — make sure the wheel is in requirements.txt")
-    raise
 
 app = FastAPI(title="AIU Smart Resume Analyzer", version="1.0.0")
 
@@ -373,11 +360,31 @@ def pdf_reader(file_buffer):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error reading PDF: {str(e)}")
 
-def extract_full_name(text):
-    doc = nlp(text)
-    for ent in doc.ents:
-        if ent.label_ == "PERSON" and len(ent.text.split()) >= 2:
-            return ent.text.strip()
+def extract_full_name(text: str) -> str:
+    """Extract full name using regex — no spaCy required.
+
+    Scans the first 20 non-empty lines for a line that looks like a person
+    name: 2–4 title-cased words, no digits, no common section headers.
+    """
+    SECTION_HEADERS = {
+        "curriculum vitae", "resume", "cv", "work experience", "education",
+        "skills", "summary", "objective", "references", "contact information",
+        "personal information", "professional summary", "career objective",
+        "profile", "about me", "cover letter",
+    }
+    # 2–4 words, each starting uppercase, only letters/hyphens/apostrophes
+    name_re = re.compile(r"^[A-Z][A-Za-z'\-]+(?:\s+[A-Z][A-Za-z'\-]+){1,3}$")
+
+    for line in text.splitlines()[:20]:
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower() in SECTION_HEADERS:
+            continue
+        if re.search(r"[@/\\0-9]", line):   # definitely not a name
+            continue
+        if name_re.match(line):
+            return line
     return "N/A"
 
 def extract_basic_info_from_text(text):
