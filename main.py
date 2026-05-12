@@ -79,7 +79,8 @@ firebase_app = None
 
 def initialize_firebase():
     global firebase_initialized, db, bucket, firebase_app
-    
+
+    # Already initialised (e.g. hot-reload / second request on same worker)
     try:
         firebase_app = firebase_admin.get_app()
         firebase_initialized = True
@@ -89,43 +90,50 @@ def initialize_firebase():
         return True
     except ValueError:
         pass
-    
+
     try:
-        firebase_config_json = os.getenv('FIREBASE_SERVICE_ACCOUNT')
-        if firebase_config_json:
-            try:
-                service_account_info = json.loads(firebase_config_json)
-                cred = credentials.Certificate(service_account_info)
-                logger.info("✅ Using Firebase service account from environment variable")
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ Invalid JSON in FIREBASE_SERVICE_ACCOUNT: {e}")
-                raise Exception("Invalid Firebase service account JSON in environment variable")
-        else:
-            service_account_files = ['serviceAccountKey.json', 'firebase-service-account.json', 'credentials.json']
-            cred = None
-            for file_path in service_account_files:
-                if os.path.exists(file_path):
-                    try:
-                        cred = credentials.Certificate(file_path)
-                        logger.info(f"✅ Using Firebase service account from {file_path}")
-                        break
-                    except Exception as file_error:
-                        logger.error(f"❌ Error loading {file_path}: {file_error}")
-                        continue
-            
-            if not cred:
-                try:
-                    cred = credentials.ApplicationDefault()
-                    logger.info("✅ Using Firebase default credentials")
-                except Exception as default_error:
-                    logger.error(f"❌ No valid Firebase credentials found: {default_error}")
-                    raise Exception("No valid Firebase credentials available")
-        
+        raw = os.getenv("FIREBASE_SERVICE_ACCOUNT", "").strip()
+
+        if not raw:
+            # ----------------------------------------------------------------
+            # FIREBASE_SERVICE_ACCOUNT is not set — give a clear action item.
+            # ----------------------------------------------------------------
+            logger.error(
+                "❌ FIREBASE_SERVICE_ACCOUNT environment variable is not set.\n"
+                "   Go to Firebase Console → Project Settings → Service Accounts\n"
+                "   → Generate new private key, then paste the entire JSON into\n"
+                "   Vercel → Settings → Environment Variables as FIREBASE_SERVICE_ACCOUNT."
+            )
+            raise Exception("FIREBASE_SERVICE_ACCOUNT env var is missing")
+
+        # Vercel sometimes double-escapes the private key newlines (\\n → \n).
+        # Fix that before parsing so json.loads always succeeds.
+        raw = raw.replace("\\n", "\n")
+
+        try:
+            service_account_info = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.error(f"❌ FIREBASE_SERVICE_ACCOUNT is not valid JSON: {exc}")
+            logger.error(
+                "   Make sure you pasted the complete .json file content, "
+                "including the outer { } braces."
+            )
+            raise Exception("FIREBASE_SERVICE_ACCOUNT contains invalid JSON") from exc
+
+        required_keys = {"type", "project_id", "private_key", "client_email"}
+        missing = required_keys - service_account_info.keys()
+        if missing:
+            logger.error(f"❌ FIREBASE_SERVICE_ACCOUNT JSON is missing keys: {missing}")
+            raise Exception(f"Service account JSON missing required fields: {missing}")
+
+        cred = credentials.Certificate(service_account_info)
+        logger.info(f"✅ Firebase credentials loaded for project: {service_account_info.get('project_id')}")
+
         firebase_app = firebase_admin.initialize_app(cred, {
-            'storageBucket': BUCKET_NAME,
-            'projectId': 'resume-analyzer-d58fd'
+            "storageBucket": BUCKET_NAME,
+            "projectId": service_account_info.get("project_id", "resume-analyzer-d58fd"),
         })
-        
+
         db = firestore.client()
         bucket = storage.bucket(BUCKET_NAME)
         
@@ -1289,12 +1297,23 @@ async def export_resumes_csv(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/health")
 async def health_check():
+    missing_vars = []
+    if not os.getenv("FIREBASE_SERVICE_ACCOUNT"):
+        missing_vars.append("FIREBASE_SERVICE_ACCOUNT")
+    if not os.getenv("JWT_SECRET"):
+        missing_vars.append("JWT_SECRET")
+
     return {
-        "status": "healthy",
+        "status": "healthy" if firebase_initialized else "degraded",
         "firebase_initialized": firebase_initialized,
         "firestore": db is not None,
         "storage": bucket is not None,
         "environment": "production" if firebase_initialized else "development",
+        "missing_env_vars": missing_vars,
+        "hint": (
+            "Set the listed env vars in Vercel → Settings → Environment Variables, "
+            "then redeploy."
+        ) if missing_vars else None,
         "timestamp": datetime.now().isoformat(),
         "version": "1.0.0",
     }
