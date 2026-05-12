@@ -20,6 +20,7 @@ import hashlib
 import time
 import firebase_admin
 from firebase_admin import credentials, auth, firestore, storage, exceptions
+from google.cloud.firestore_v1.base_query import FieldFilter
 import requests
 import json
 import random
@@ -154,7 +155,7 @@ def create_default_admin():
     
     try:
         admins_ref = db.collection('admins')
-        query = admins_ref.where('email', '==', "admin@aiu.edu.my").limit(1).get()
+        query = admins_ref.where(filter=FieldFilter('email', '==', "admin@aiu.edu.my")).limit(1).get()
         
         if not query:
             hashed_password = bcrypt.hashpw("Admin123!".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -632,31 +633,31 @@ async def ensure_user_in_firebase_auth(email: str, password: str = None):
 # ---------------------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def index_page(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html")
 
 @app.get("/resume-upload", response_class=HTMLResponse)
 async def resume_upload_page(request: Request):
-    return templates.TemplateResponse("resume-upload.html", {"request": request})
+    return templates.TemplateResponse(request, "resume-upload.html")
 
 @app.get("/register", response_class=HTMLResponse)
 async def register_page(request: Request):
-    return templates.TemplateResponse("register.html", {"request": request})
+    return templates.TemplateResponse(request, "register.html")
 
 @app.get("/admin-login", response_class=HTMLResponse)
 async def admin_login_page(request: Request):
-    return templates.TemplateResponse("admin-login.html", {"request": request})
+    return templates.TemplateResponse(request, "admin-login.html")
 
 @app.get("/admin-dashboard", response_class=HTMLResponse)
 async def admin_dashboard(request: Request):
-    return templates.TemplateResponse("admin-dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "admin-dashboard.html")
 
 @app.get("/profile", response_class=HTMLResponse)
 async def user_profile_page(request: Request):
-    return templates.TemplateResponse("profile.html", {"request": request})
+    return templates.TemplateResponse(request, "profile.html")
 
 @app.get("/forgot-password", response_class=HTMLResponse)
 async def forgot_password_page(request: Request):
-    return templates.TemplateResponse("forgot-password.html", {"request": request})
+    return templates.TemplateResponse(request, "forgot-password.html")
 
 # ---------------------------------------------------------------------------
 # API routes — identical to original, no changes needed below
@@ -667,7 +668,7 @@ async def check_email_exists(email_data: CheckEmailRequest):
     try:
         if db:
             users_ref = db.collection('users')
-            query = users_ref.where('email', '==', email_data.email).limit(1).get()
+            query = users_ref.where(filter=FieldFilter('email', '==', email_data.email)).limit(1).get()
             exists = len(query) > 0
             if exists:
                 await ensure_user_in_firebase_auth(email_data.email)
@@ -685,7 +686,7 @@ async def send_password_reset_email(email_data: PasswordResetRequest, request: R
     try:
         if db:
             users_ref = db.collection('users')
-            query = users_ref.where('email', '==', email_data.email).limit(1).get()
+            query = users_ref.where(filter=FieldFilter('email', '==', email_data.email)).limit(1).get()
             if len(query) == 0:
                 raise HTTPException(status_code=404, detail="No account found with this email address")
         else:
@@ -723,7 +724,7 @@ async def update_database_password(password_data: DatabasePasswordUpdate):
         
         if db:
             users_ref = db.collection('users')
-            query = users_ref.where('email', '==', email).limit(1).get()
+            query = users_ref.where(filter=FieldFilter('email', '==', email)).limit(1).get()
             if len(query) == 0:
                 raise HTTPException(status_code=404, detail="User not found in database")
             user_doc = query[0]
@@ -774,7 +775,7 @@ async def register_user(user_data: UserRegistration):
     if db:
         try:
             users_ref = db.collection('users')
-            query = users_ref.where('email', '==', user_data.email).limit(1).stream()
+            query = users_ref.where(filter=FieldFilter('email', '==', user_data.email)).limit(1).stream()
             if any(query):
                 raise HTTPException(status_code=400, detail="Email already registered")
             doc_ref = users_ref.add(user_doc)
@@ -798,7 +799,7 @@ async def user_login(user_data: UserLogin):
     try:
         if db:
             users_ref = db.collection('users')
-            docs = users_ref.where('email', '==', user_data.email).limit(1).get()
+            docs = users_ref.where(filter=FieldFilter('email', '==', user_data.email)).limit(1).get()
             if len(docs) == 0:
                 raise HTTPException(status_code=401, detail="Invalid email or password")
             user_doc = docs[0].to_dict()
@@ -836,7 +837,7 @@ async def admin_login(admin_data: AdminLogin):
     try:
         if db:
             admins_ref = db.collection('admins')
-            docs = admins_ref.where('email', '==', admin_data.email).limit(1).get()
+            docs = admins_ref.where(filter=FieldFilter('email', '==', admin_data.email)).limit(1).get()
             if len(docs) == 0:
                 raise HTTPException(status_code=401, detail="Invalid admin credentials")
             doc = docs[0]
@@ -918,7 +919,7 @@ async def get_user_profile(current_user: dict = Depends(get_current_user)):
 async def get_user_resumes(current_user: dict = Depends(get_current_user)):
     if db:
         try:
-            docs = db.collection('resumes').where('user_id', '==', current_user['user_id']).stream()
+            docs = db.collection('resumes').where(filter=FieldFilter('user_id', '==', current_user['user_id'])).stream()
             results = []
             for doc in docs:
                 resume_data = doc.to_dict()
@@ -1031,7 +1032,7 @@ async def create_admin(admin_data: AdminCreate, current_user: dict = Depends(get
     if db:
         try:
             admins_ref = db.collection('admins')
-            if any(admins_ref.where('email', '==', admin_data.email).limit(1).stream()):
+            if any(admins_ref.where(filter=FieldFilter('email', '==', admin_data.email)).limit(1).stream()):
                 raise HTTPException(status_code=400, detail="Admin email already exists")
             doc_ref = admins_ref.add(new_admin_doc)
             return {"message": "Admin created successfully", "admin_id": doc_ref[1].id}
